@@ -13,8 +13,7 @@ To use arbitrary callback data, you must install PTB via
 """
 import logging
 from datetime import datetime, timezone, timedelta
-
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -30,6 +29,7 @@ from superbase_client import (get_or_create_user, get_user_daily_limit,
     get_today_usage_count, create_project, update_project_messages, get_user_membership_info
 )
 from config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
+from flask import Flask, request, jsonify
 
 # Enable logging
 logging.basicConfig(
@@ -225,11 +225,74 @@ def suangua(question: str) -> str:
         logger.error(f"算卦出错: {str(e)}")
         return "抱歉，算卦系统暂时遇到问题，请稍后再试。"
 
-if __name__ == "__main__":
+
     # 让 python-telegram-bot 处理事件循环
-    application = Application.builder().token(TG_BOT_TOKEN).build()
-    # 添加处理器
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("profile", profile))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+bot = Bot(TG_BOT_TOKEN)
+application = Application.builder().bot(bot).build()
+# 添加处理器
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("profile", profile))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+def create_app():
+    app = Flask(__name__)
+    
+    def init_webhook():
+        import asyncio
+        async def setup():
+            await application.initialize()
+            await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
+        asyncio.run(setup())
+    
+    init_webhook()
+    
+    @app.route("/webhook", methods=["POST"])
+    def webhook():
+        try:
+            json_data = request.get_json()
+            update = Update.de_json(json_data, bot)
+            
+            async def process_update():
+                async with application:
+                    await application.process_update(update)
+                    
+            import asyncio
+            asyncio.run(process_update())
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            print(f"Error processing update: {str(e)}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/send_photo", methods=["POST"])
+    def send_photo():
+        try:
+            data = request.get_json()
+            chat_id = data.get('chat_id')
+            photo_url = data.get('photo_url')
+            
+            if not chat_id or not photo_url:
+                return jsonify({"status": "error", "message": "Missing chat_id or photo_url"}), 400
+                
+            async def send():
+                async with bot:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo_url
+                    )
+                    
+            import asyncio
+            asyncio.run(send())
+            return jsonify({"status": "success", "message": "Photo sent successfully"})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/")
+    def index():
+        return jsonify({"message": "Hello, this is the Telegram bot webhook!"})
+        
+    return app
+
+app = create_app()
+
+if __name__ == "__main__":
+    app.run(debug=True)
