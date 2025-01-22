@@ -98,7 +98,7 @@ async def handle_invalid_button(update: Update, context: ContextTypes.DEFAULT_TY
 def main() -> None:
     """Run the bot."""
     # We use persistence to demonstrate how buttons can still work after the bot was restarted
-    persistence = PicklePersistence(filepath="arbitrarycallbackdatabot")
+    persistence = PicklePersistence(filepath="../arbitrarycallbackdatabot")
     # Create the Application and pass it your bot's token.
     application = (
         Application.builder()

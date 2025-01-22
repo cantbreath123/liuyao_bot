@@ -13,23 +13,20 @@ To use arbitrary callback data, you must install PTB via
 """
 import logging
 from datetime import datetime, timezone, timedelta
-import asyncio
 
 from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
-    PicklePersistence,
     MessageHandler,
     filters,
 )
 from cozepy import (
     Coze, TokenAuth, Message, ChatEventType, COZE_CN_BASE_URL
 )
-from telegram.constants import ParseMode
-from superbase_client import (
-    init_base_tier, get_or_create_user, get_user_daily_limit,
+
+from superbase_client import (get_or_create_user, get_user_daily_limit,
     get_today_usage_count, create_project, update_project_messages, get_user_membership_info
 )
 from config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
