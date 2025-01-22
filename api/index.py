@@ -256,8 +256,14 @@ def create_app():
                 async with application:
                     await application.process_update(update)
                     
-            import asyncio
-            asyncio.run(process_update())
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(process_update())
+            finally:
+                loop.close()
+                
             return jsonify({"status": "ok"})
         except Exception as e:
             print(f"Error processing update: {str(e)}")
@@ -280,8 +286,14 @@ def create_app():
                         photo=photo_url
                     )
 
-            import asyncio
-            asyncio.run(send())
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(send())
+            finally:
+                loop.close()
+                
             return jsonify({"status": "success", "message": "Photo sent successfully"})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
