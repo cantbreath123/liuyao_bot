@@ -25,7 +25,7 @@ from cozepy import (
     Coze, TokenAuth, Message, ChatEventType, COZE_CN_BASE_URL
 )
 
-from superbase_client import (get_or_create_user, get_user_daily_limit,
+from api.superbase_client import (get_or_create_user, get_user_daily_limit,
     get_today_usage_count, create_project, update_project_messages, get_user_membership_info
 )
 from config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
@@ -269,17 +269,17 @@ def create_app():
             data = request.get_json()
             chat_id = data.get('chat_id')
             photo_url = data.get('photo_url')
-            
+
             if not chat_id or not photo_url:
                 return jsonify({"status": "error", "message": "Missing chat_id or photo_url"}), 400
-                
+
             async def send():
                 async with bot:
                     await bot.send_photo(
                         chat_id=chat_id,
                         photo=photo_url
                     )
-                    
+
             import asyncio
             asyncio.run(send())
             return jsonify({"status": "success", "message": "Photo sent successfully"})
