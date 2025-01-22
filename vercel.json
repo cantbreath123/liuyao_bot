@@ -13,9 +13,8 @@
     }
   ],
   "functions": {
-    "api/*.py": {
+    "api/index.py": {
       "maxDuration": 60
     }
   }
-
 }
