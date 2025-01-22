@@ -51,6 +51,7 @@ async def get_or_create_user(tg_user_id: str, user_name: str):
             # 创建新用户，使用 UUID 作为 user_id
             user_data = {
                 'user_id': str(uuid.uuid4()),  # 生成 UUID
+                'user_name': user_name,
                 'tg_user_id': tg_user_id,
                 'is_valid': True
             }
@@ -185,5 +186,67 @@ async def get_user_membership_info(user_id: str):
         return None
 
 
+async def create_user_with_membership(user_id: str, user_name: str, tier_id: str):
+    """创建用户并分配会员资格"""
+    try:
+        # 2. 获取会员等级信息
+        tier_response = supabase.table('membership_tiers') \
+            .select('*') \
+            .eq('tier_id', tier_id) \
+            .execute()
+            
+        if not tier_response.data:
+            print(f"会员等级不存在: {tier_id}")
+            return None
+            
+        tier_info = tier_response.data[0]
+        
+        # 3. 计算会员有效期
+        start_time = datetime.now(timezone.utc)
+        if tier_info['duration_unit'] == 'MONTH':
+            end_time = start_time + timedelta(days=30 * tier_info['duration_amount'])
+        elif tier_info['duration_unit'] == 'YEAR':
+            end_time = start_time + timedelta(days=365 * tier_info['duration_amount'])
+        else:  # 默认按天计算
+            end_time = start_time + timedelta(days=tier_info['duration_amount'])
+            
+        # 4. 创建会员记录
+        membership_data = {
+            'user_id': user_id,
+            'tier_id': tier_id,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'status': True,
+            'env': 'prod'
+        }
+        
+        # 5. 将用户现有会员设为无效
+        supabase.table('user_memberships') \
+            .update({'status': False}) \
+            .eq('user_id', user_id) \
+            .eq('status', True) \
+            .execute()
+            
+        # 6. 创建新的会员记录
+        membership_response = supabase.table('user_memberships') \
+            .insert(membership_data) \
+            .execute()
+            
+        if not membership_response.data:
+            print("创建会员记录失败")
+            return None
+            
+        # 7. 返回完整的用户和会员信息
+        return {
+            'user': user_id,
+            'membership': membership_response.data[0],
+            'tier': tier_info
+        }
+        
+    except Exception as e:
+        print(f"创建用户会员失败: {str(e)}")
+        return None
+
+
 if __name__ == '__main__':
-    asyncio.run(init_base_tier())
+    asyncio.run(create_user_with_membership("0cda1975-06fc-4cd8-b28a-1ee64bdfc1e6", "no one", " vip1"))
