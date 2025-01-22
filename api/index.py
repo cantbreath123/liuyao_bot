@@ -28,7 +28,7 @@ from cozepy import (
 from api.superbase_client import (get_or_create_user, get_user_daily_limit,
     get_today_usage_count, create_project, update_project_messages, get_user_membership_info
 )
-from config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
+from api.config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
 from flask import Flask, request, jsonify
 
 # Enable logging
