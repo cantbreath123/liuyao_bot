@@ -69,12 +69,12 @@ async def get_user_daily_limit(user_id: str):
     """获取用户每日限制次数"""
     try:
         # 1. 获取用户当前有效的会员资格
-        now_timestamp = int(datetime.now().timestamp())
+        current_time = format_timestamp(datetime.now(timezone(timedelta(hours=8))))
         membership_response = supabase.table('user_memberships') \
             .select('tier_id') \
             .eq('user_id', user_id) \
             .eq('status', True) \
-            .gte('end_time', now_timestamp) \
+            .gte('end_time', current_time) \
             .execute()
 
         if not membership_response.data:
