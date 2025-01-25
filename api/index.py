@@ -29,6 +29,7 @@ from cozepy import (
 from telegram.request import HTTPXRequest
 import httpx
 from functools import wraps  # 添加装饰器所需的导入
+import sys
 
 from api.superbase_client import (get_or_create_user, get_user_daily_limit,
     get_today_usage_count, create_project, update_project_messages, get_user_membership_info
@@ -36,13 +37,12 @@ from api.superbase_client import (get_or_create_user, get_user_daily_limit,
 from api.config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
 from flask import Flask, request, jsonify
 
-# Enable logging
+# 配置日志输出到 stdout，这样 Vercel 可以捕获日志
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    stream=sys.stdout,
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-# set higher logging level for httpx to avoid all GET and POST requests being logged
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
 logger = logging.getLogger(__name__)
 
 # Coze API 配置
@@ -86,56 +86,44 @@ async def initialize_user_data(context: ContextTypes.DEFAULT_TYPE, tg_user_id: s
     context.user_data['last_date'] = current_date.isoformat()
     context.user_data['user_id'] = user['user_id']  # 存储用户ID而不是整个用户对象
 
-def with_error_handling(func: Callable) -> Callable:
+# 添加一个简单的日志装饰器
+def log_function(func):
     @wraps(func)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        max_retries = 3
-        retry_count = 0
-        
-        while retry_count < max_retries:
-            try:
-                async with asyncio.timeout(10):  # 为每个操作设置超时
-                    return await func(*args, **kwargs)
-            except (asyncio.TimeoutError, telegram.error.TimedOut) as e:
-                retry_count += 1
-                logger.error(f"Timeout in {func.__name__}: {str(e)}")
-                if retry_count >= max_retries:
-                    raise
-                await asyncio.sleep(1 * retry_count)  # 递增等待时间
-            except Exception as e:
-                retry_count += 1
-                logger.error(f"Error in {func.__name__}: {str(e)}")
-                if retry_count >= max_retries:
-                    raise
-                await asyncio.sleep(1)
-                
+    async def wrapper(*args, **kwargs):
+        print(f"Starting {func.__name__}")  # Vercel 会捕获 print 语句
+        try:
+            result = await func(*args, **kwargs)
+            print(f"Completed {func.__name__}")
+            return result
+        except Exception as e:
+            print(f"Error in {func.__name__}: {str(e)}")
+            raise
     return wrapper
 
-@with_error_handling
+@log_function
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """开始算卦流程"""
     try:
+        print("Start command received")
         user_id = str(update.effective_user.id)
         user_name = update.effective_user.first_name + " " + update.effective_user.last_name
         
-        # 初始化用户数据
-        logger.info(f"Starting divination for user: {user_id}")
+        print(f"Initializing user {user_id}")
         await initialize_user_data(context, user_id, user_name)
         
-        # 检查是否还有剩余次数
-        if context.user_data['daily_count'] <= 0:
+        if context.user_data.get('daily_count', 0) <= 0:
+            print("User has no remaining count")
             await update.message.reply_text("今日算卦次数已用完，请明日再来。")
             return
 
+        print("Sending welcome message")
         await update.message.reply_text("请输入你所求之事：")
         context.user_data['waiting_for_question'] = True
+        print("Start command completed")
         
     except Exception as e:
-        logger.error(f"Error in start command: {str(e)}")
-        try:
-            await update.message.reply_text("系统出现错误，请稍后重试。")
-        except Exception as reply_error:
-            logger.error(f"Error sending error message: {str(reply_error)}")
+        print(f"Start command error: {str(e)}")
+        await update.message.reply_text("系统出现错误，请稍后重试。")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理用户输入的问题"""
@@ -289,36 +277,43 @@ def create_app():
     def init_webhook():
         import asyncio
         async def setup():
+            logger.info("Initializing application")  # 添加日志
             await application.initialize()
             await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
+            logger.info("Webhook setup completed")  # 添加日志
+            
         asyncio.run(setup())
     
     init_webhook()
+    logger.info("Application created successfully")  # 添加日志
     
     @app.route("/webhook", methods=["POST"])
     def webhook():
         try:
+            print("Webhook received")  # 使用 print 而不是 logger
             json_data = request.get_json()
+            print(f"Webhook data: {json_data}")
+            
             update = Update.de_json(json_data, bot)
             
-            # 创建一个新的事件循环来处理请求
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
             try:
-                # 等待所有任务完成
+                print("Processing update")
                 loop.run_until_complete(application.process_update(update))
-                # 确保所有待处理的任务都完成
-                pending = asyncio.all_tasks(loop)
-                loop.run_until_complete(asyncio.gather(*pending))
+                print("Update processed")
+            except Exception as e:
+                print(f"Error processing update: {str(e)}")
+                raise
             finally:
                 loop.close()
-                asyncio.set_event_loop(None)  # 清除当前事件循环的引用
+                asyncio.set_event_loop(None)
                 
             return jsonify({"status": "ok"})
             
         except Exception as e:
-            logger.error(f"Error in webhook: {str(e)}")
+            print(f"Webhook error: {str(e)}")
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/send_photo", methods=["POST"])
