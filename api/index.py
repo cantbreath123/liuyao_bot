@@ -204,7 +204,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 formatted_text = text_buffer.replace("<br><br>", "\n")
                 messages.append({'role': 'assistant', 'content': formatted_text})
                 try:
-                    await message.edit_text(text_buffer)
+                    await message.edit_text(formatted_text)
                     await update_project_messages(project['project_id'], messages)
                 except Exception as e:
                     print(f"Failed to update final message: {e!r}")
