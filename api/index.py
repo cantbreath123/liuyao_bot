@@ -150,7 +150,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理用户输入的问题"""
     if context.user_data.get('waiting_for_question'):
-        await initialize_user_data(context, str(update.effective_user.id), 
+        await initialize_user_data(context, str(update.effective_user.id),
                                  update.effective_user.first_name + " " + update.effective_user.last_name)
 
         if context.user_data['daily_count'] <= 0:
@@ -306,15 +306,15 @@ async def startup_event():
     # 初始化 bot 和 application
     bot = Bot(TG_BOT_TOKEN, request=http_request)
     application = Application.builder().bot(bot).build()
-    
+
     # 初始化 application
     await application.initialize()
-    
+
     # 添加处理器
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("profile", profile))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
+
     # 设置 webhook
     await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
     logger.info("Application initialized and webhook set")
@@ -331,12 +331,16 @@ async def shutdown_event():
 async def webhook(request: Request):
     """处理 Telegram webhook 请求"""
     try:
+        global application, bot
         if not application:
+            # 初始化 bot 和 application
+            bot = Bot(TG_BOT_TOKEN, request=http_request)
+            application = Application.builder().bot(bot).build()
             raise RuntimeError("Application not initialized")
-            
+
         json_data = await request.json()
         update = Update.de_json(json_data, application.bot)
-        
+
         # 使用 application 的上下文管理器来处理更新
         async with application:
             await application.process_update(update)
