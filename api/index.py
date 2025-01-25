@@ -25,14 +25,14 @@ from telegram.ext import (
 from cozepy import (
     Coze, TokenAuth, Message, ChatEventType, COZE_CN_BASE_URL
 )
+from telegram.request import HTTPXRequest
+import httpx
 
 from api.superbase_client import (get_or_create_user, get_user_daily_limit,
     get_today_usage_count, create_project, update_project_messages, get_user_membership_info
 )
 from api.config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
 from flask import Flask, request, jsonify
-from functools import wraps
-from typing import Callable, Any
 
 # Enable logging
 logging.basicConfig(
@@ -49,6 +49,19 @@ coze = Coze(
     base_url=COZE_CN_BASE_URL
 )
 BOT_ID = COZE_BOT_ID
+
+# 自定义请求处理器，增加超时时间和连接池大小
+request = HTTPXRequest(
+    connection_pool_size=8,
+    connect_timeout=10.0,
+    read_timeout=10.0,
+    write_timeout=10.0,
+    pool_timeout=3.0,
+)
+
+# 初始化 bot 时使用自定义的请求处理器
+bot = Bot(TG_BOT_TOKEN, request=request)
+application = Application.builder().bot(bot).build()
 
 async def initialize_user_data(context: ContextTypes.DEFAULT_TYPE, tg_user_id: str, user_name: str) -> None:
     """初始化或更新用户数据"""
@@ -79,31 +92,45 @@ def with_error_handling(func: Callable) -> Callable:
         
         while retry_count < max_retries:
             try:
-                return await func(*args, **kwargs)
+                async with asyncio.timeout(10):  # 为每个操作设置超时
+                    return await func(*args, **kwargs)
+            except (asyncio.TimeoutError, telegram.error.TimedOut) as e:
+                retry_count += 1
+                logger.error(f"Timeout in {func.__name__}: {str(e)}")
+                if retry_count >= max_retries:
+                    raise
+                await asyncio.sleep(1 * retry_count)  # 递增等待时间
             except Exception as e:
                 retry_count += 1
                 logger.error(f"Error in {func.__name__}: {str(e)}")
                 if retry_count >= max_retries:
                     raise
-                await asyncio.sleep(1)  # 重试前等待
+                await asyncio.sleep(1)
                 
     return wrapper
 
 @with_error_handling
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """开始算卦流程"""
-    # 初始化用户数据
-    print("start")
-    logger.info("logger start")
-    await initialize_user_data(context, str(update.effective_user.id), update.effective_user.first_name + " " + update.effective_user.last_name)
-    
-    # 检查是否还有剩余次数
-    if context.user_data['daily_count'] <= 0:
-        await update.message.reply_text("今日算卦次数已用完，请明日再来。")
-        return
+    try:
+        user_id = str(update.effective_user.id)
+        user_name = update.effective_user.first_name + " " + update.effective_user.last_name
+        
+        # 初始化用户数据
+        logger.info(f"Starting divination for user: {user_id}")
+        await initialize_user_data(context, user_id, user_name)
+        
+        # 检查是否还有剩余次数
+        if context.user_data['daily_count'] <= 0:
+            await update.message.reply_text("今日算卦次数已用完，请明日再来。")
+            return
 
-    await update.message.reply_text("请输入你所求之事：")
-    context.user_data['waiting_for_question'] = True
+        await update.message.reply_text("请输入你所求之事：")
+        context.user_data['waiting_for_question'] = True
+        
+    except Exception as e:
+        logger.error(f"Error in start command: {str(e)}")
+        await update.message.reply_text("系统出现错误，请稍后重试。")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理用户输入的问题"""
@@ -251,15 +278,6 @@ def suangua(question: str) -> str:
         logger.error(f"算卦出错: {str(e)}")
         return "抱歉，算卦系统暂时遇到问题，请稍后再试。"
 
-
-    # 让 python-telegram-bot 处理事件循环
-bot = Bot(TG_BOT_TOKEN)
-application = Application.builder().bot(bot).build()
-# 添加处理器
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("profile", profile))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
 def create_app():
     app = Flask(__name__)
     
@@ -279,20 +297,25 @@ def create_app():
             update = Update.de_json(json_data, bot)
             
             async def process_update():
-                try:
-                    async with application:
-                        await application.process_update(update)
-                except Exception as e:
-                    logger.error(f"Error processing update: {str(e)}")
+                async with asyncio.timeout(30):  # 设置总体超时时间
+                    try:
+                        async with application:
+                            await application.process_update(update)
+                    except Exception as e:
+                        logger.error(f"Error processing update: {str(e)}")
                     
-            # 使用新的事件循环
+            # 使用新的事件循环，并设置更长的超时时间
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 loop.run_until_complete(process_update())
+            except asyncio.TimeoutError:
+                logger.error("Request timeout")
+            except Exception as e:
+                logger.error(f"Error in webhook: {str(e)}")
             finally:
                 loop.close()
-                asyncio.set_event_loop(None)  # 清除当前事件循环
+                asyncio.set_event_loop(None)
                 
             return jsonify({"status": "ok"})
         except Exception as e:
