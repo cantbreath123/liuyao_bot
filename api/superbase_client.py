@@ -69,12 +69,12 @@ async def get_user_daily_limit(user_id: str):
     """获取用户每日限制次数"""
     try:
         # 1. 获取用户当前有效的会员资格
-        now = datetime.now(timezone.utc).isoformat()
+        now_timestamp = int(datetime.now().timestamp())
         membership_response = supabase.table('user_memberships') \
             .select('tier_id') \
             .eq('user_id', user_id) \
             .eq('status', True) \
-            .gte('end_time', now) \
+            .gte('end_time', now_timestamp) \
             .execute()
 
         if not membership_response.data:
@@ -96,18 +96,27 @@ async def get_user_daily_limit(user_id: str):
         return 1  # 出错时返回默认限制
 
 
-async def get_today_usage_count(user_id: str, current_date: str):
+async def get_today_usage_count(user_id: str):
     """获取用户今日已使用次数"""
     try:
-        # 获取用户当日的项目记录
-        start_time = f"{current_date}T00:00:00Z"
-        end_time = f"{current_date}T23:59:59Z"
+        # 获取北京时间（UTC+8）的今天的开始和结束时间戳
+        beijing_tz = timezone(timedelta(hours=8))
+        beijing_now = datetime.now(beijing_tz)
+        
+        # 设置为当天的开始时间 (00:00:00)
+        start_time = beijing_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_timestamp = int(start_time.timestamp())
+        
+        # 设置为当天的结束时间 (23:59:59)
+        end_time = start_time + timedelta(days=1, seconds=-1)
+        end_timestamp = int(end_time.timestamp())
+        
         response = supabase.table('projects') \
             .select('id') \
             .eq('user_id', user_id) \
             .eq('env', 'prod') \
-            .gte('created_at', start_time) \
-            .lte('created_at', end_time) \
+            .gte('created_at', start_timestamp) \
+            .lte('created_at', end_timestamp) \
             .execute()
 
         return len(response.data)
@@ -119,12 +128,12 @@ async def get_today_usage_count(user_id: str, current_date: str):
 async def create_project(user_id: str, question: str):
     """创建新的算卦项目记录"""
     try:
-
         project_data = {
-            'project_id': f'divination_{datetime.now(timezone.utc).timestamp()}',
+            'project_id': f'divination_{int(datetime.now().timestamp())}',
             'user_id': user_id,
             'env': 'prod',
-            'message_list': [{'role': 'user', 'content': question}]
+            'message_list': [{'role': 'user', 'content': question}],
+            'created_at': int(datetime.now().timestamp())
         }
 
         response = supabase.table('projects').insert(project_data).execute()
@@ -151,12 +160,12 @@ async def get_user_membership_info(user_id: str):
     """获取用户的会员信息"""
     try:
         # 获取用户当前有效的会员资格
-        now = datetime.now(timezone.utc).isoformat()
+        now_timestamp = int(datetime.now().timestamp())
         membership_response = supabase.table('user_memberships')\
             .select('tier_id, start_time, end_time')\
             .eq('user_id', user_id)\
             .eq('status', True)\
-            .gte('end_time', now)\
+            .gte('end_time', now_timestamp)\
             .execute()
             
         if not membership_response.data:
@@ -202,20 +211,20 @@ async def create_user_with_membership(user_id: str, user_name: str, tier_id: str
         tier_info = tier_response.data[0]
         
         # 3. 计算会员有效期
-        start_time = datetime.now(timezone.utc)
+        start_timestamp = int(datetime.now().timestamp())
         if tier_info['duration_unit'] == 'MONTH':
-            end_time = start_time + timedelta(days=30 * tier_info['duration_amount'])
+            end_timestamp = start_timestamp + (30 * 24 * 3600 * tier_info['duration_amount'])
         elif tier_info['duration_unit'] == 'YEAR':
-            end_time = start_time + timedelta(days=365 * tier_info['duration_amount'])
+            end_timestamp = start_timestamp + (365 * 24 * 3600 * tier_info['duration_amount'])
         else:  # 默认按天计算
-            end_time = start_time + timedelta(days=tier_info['duration_amount'])
+            end_timestamp = start_timestamp + (24 * 3600 * tier_info['duration_amount'])
             
         # 4. 创建会员记录
         membership_data = {
             'user_id': user_id,
             'tier_id': tier_id,
-            'start_time': start_time.isoformat(),
-            'end_time': end_time.isoformat(),
+            'start_time': start_timestamp,
+            'end_time': end_timestamp,
             'status': True,
             'env': 'prod'
         }

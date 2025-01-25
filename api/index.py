@@ -62,7 +62,7 @@ async def initialize_user_data(context: ContextTypes.DEFAULT_TYPE, tg_user_id: s
         
     # 获取用户每日限制和已使用次数
     daily_limit = await get_user_daily_limit(user['user_id'])
-    used_count = await get_today_usage_count(user['user_id'], current_date.isoformat())
+    used_count = await get_today_usage_count(user['user_id'])
     
     context.user_data['daily_limit'] = daily_limit
     context.user_data['daily_count'] = daily_limit - used_count
@@ -73,6 +73,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """开始算卦流程"""
     # 初始化用户数据
     print("start")
+    logger.info("logger start")
     await initialize_user_data(context, str(update.effective_user.id), update.effective_user.first_name + " " + update.effective_user.last_name)
     
     # 检查是否还有剩余次数
@@ -130,18 +131,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         content_buffer += content
                         
                         if message is None:
+                            # 初始化消息
                             message = await update.message.reply_text(
                                 f"您所问的事：{question}\n\n卦象解析：\n{content_buffer}"
                             )
                             text_buffer = f"您所问的事：{question}\n\n卦象解析：\n{content_buffer}"
+                            content_buffer = ""  # 清空内容缓冲区
                         elif len(content_buffer) >= BUFFER_SIZE:
-                            text_buffer += content_buffer
-                            text_buffer = text_buffer.replace("<br><br>", "\n")
+                            # 更新现有消息
+                            text_buffer += content_buffer  # 将新内容添加到总缓冲区
+                            formatted_text = text_buffer.replace("<br><br>", "\n")
                             try:
-                                await message.edit_text(text_buffer)
+                                await message.edit_text(formatted_text)
                             except Exception as e:
                                 logger.warning(f"Failed to update message: {str(e)}")
-                            content_buffer = ""
+                            content_buffer = ""  # 清空内容缓冲区
             
             # 最后更新一次消息和项目记录
             if content_buffer and message:
