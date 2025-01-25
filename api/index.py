@@ -52,8 +52,8 @@ coze = Coze(
 )
 BOT_ID = COZE_BOT_ID
 
-# 自定义请求处理器，增加超时时间和连接池大小
-request = HTTPXRequest(
+# 自定义请求处理器，改名为 http_request
+http_request = HTTPXRequest(
     connection_pool_size=8,
     connect_timeout=10.0,
     read_timeout=10.0,
@@ -62,7 +62,7 @@ request = HTTPXRequest(
 )
 
 # 初始化 bot 时使用自定义的请求处理器
-bot = Bot(TG_BOT_TOKEN, request=request)
+bot = Bot(TG_BOT_TOKEN, request=http_request)
 application = Application.builder().bot(bot).build()
 
 async def initialize_user_data(context: ContextTypes.DEFAULT_TYPE, tg_user_id: str, user_name: str) -> None:
@@ -295,6 +295,7 @@ def create_app():
     @app.route("/webhook", methods=["POST"])
     def webhook():
         try:
+            # 使用 Flask 的 request
             json_data = request.get_json()
             update = Update.de_json(json_data, bot)
             
