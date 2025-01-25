@@ -12,7 +12,6 @@ To use arbitrary callback data, you must install PTB via
 `pip install "python-telegram-bot[callback-data]"`
 """
 import asyncio
-import logging
 import traceback
 from datetime import datetime, timezone, timedelta
 from telegram import Update, Bot
@@ -38,14 +37,6 @@ from api.superbase_client import (get_or_create_user, get_user_daily_limit,
     get_today_usage_count, create_project, update_project_messages, get_user_membership_info
 )
 from api.config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
-
-# 配置日志输出到 stdout，这样 Vercel 可以捕获日志
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 # Coze API 配置
 coze = Coze(
@@ -89,7 +80,7 @@ async def initialize_user_data(context: ContextTypes.DEFAULT_TYPE, tg_user_id: s
     # 获取用户信息
     user = await get_or_create_user(tg_user_id, user_name)
     if not user:
-        logger.error(f"Failed to get or create user for tg_user_id: {tg_user_id}")
+        print(f"Failed to get or create user for tg_user_id: {tg_user_id}")
         return
 
     # 获取用户每日限制和已使用次数
@@ -123,7 +114,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_id = str(update.effective_user.id)
         user_name = update.effective_user.first_name + " " + update.effective_user.last_name
 
-        # 直接调用异步函数
         await initialize_user_data(context, user_id, user_name)
 
         if context.user_data.get('daily_count', 0) <= 0:
@@ -140,8 +130,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data['waiting_for_question'] = True
 
     except Exception as e:
-        logger.error(f"Error in start: {e!r}")
-        logger.error(traceback.format_exc())
+        print(f"Error in start: {e!r}")
+        print(f"Traceback: {traceback.format_exc()}")
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="系统出现错误，请稍后重试。"
@@ -206,7 +196,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             try:
                                 await message.edit_text(formatted_text)
                             except Exception as e:
-                                logger.warning(f"Failed to update message: {str(e)}")
+                                print(f"Failed to update message: {str(e)}")
                             content_buffer = ""
 
             if content_buffer and message:
@@ -216,10 +206,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     await message.edit_text(text_buffer)
                     await update_project_messages(project['project_id'], messages)
                 except Exception as e:
-                    logger.warning(f"Failed to update final message: {str(e)}")
+                    print(f"Failed to update final message: {e!r}")
 
         except Exception as e:
-            logger.error(f"算卦出错: {str(e)}")
+            print(f"算卦出错: {e!r}")
+            print(f"Traceback: {traceback.format_exc()}")
             await update.message.reply_text("抱歉，算卦系统暂时遇到问题，请稍后再试。")
     else:
         await update.message.reply_text("请先发送 /start 开始算卦流程。")
@@ -259,7 +250,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def suangua(question: str) -> str:
     """调用 Coze API 进行算卦"""
-    logger.info(f"算卦问题：{question}")
+    print(f"算卦问题：{question}")
     result = ""
     try:
         user_id = f"user_{hash(question)}"
@@ -288,36 +279,50 @@ def suangua(question: str) -> str:
         return result if result else "抱歉，算卦失败，请稍后再试。"
 
     except Exception as e:
-        logger.error(f"算卦出错: {str(e)}")
+        print(f"算卦出错: {str(e)}")
         return "抱歉，算卦系统暂时遇到问题，请稍后再试。"
 
 # 创建 FastAPI 应用
 app = FastAPI()
 
 # 全局变量来存储初始化状态
-application = None
+application: Application = None
 bot = None
 
 @app.on_event("startup")
 async def startup_event():
     """应用启动时的初始化"""
     global application, bot
+    
+    try:
+        # 初始化 HTTP 请求处理器
+        http_request = HTTPXRequest(
+            connection_pool_size=16,
+            connect_timeout=20.0,
+            read_timeout=20.0,
+            write_timeout=20.0,
+            pool_timeout=5.0,
+        )
 
-    # 初始化 bot 和 application
-    bot = Bot(TG_BOT_TOKEN, request=http_request)
-    application = Application.builder().bot(bot).build()
-
-    # 初始化 application
-    await application.initialize()
-
-    # 添加处理器
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("profile", profile))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # 设置 webhook
-    await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
-    logger.info("Application initialized and webhook set")
+        # 初始化 bot 和 application
+        bot = Bot(TG_BOT_TOKEN, request=http_request)
+        application = Application.builder().bot(bot).build()
+        
+        # 初始化 application
+        await application.initialize()
+        
+        # 添加处理器
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("profile", profile))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # 设置 webhook
+        await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
+        print("Application initialized and webhook set")
+    except Exception as e:
+        print(f"Failed to initialize application: {e!r}")
+        print(f"Traceback: {traceback.format_exc()}")
+        raise
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -325,28 +330,30 @@ async def shutdown_event():
     global application
     if application:
         await application.shutdown()
-        logger.info("Application shut down")
+        print("Application shut down")
 
 @app.post("/webhook")
 async def webhook(request: Request):
     """处理 Telegram webhook 请求"""
+    if not application:
+        print("Webhook called before application initialization")
+        return JSONResponse(
+            content={"status": "error", "message": "Application not initialized"},
+            status_code=503
+        )
+        
     try:
-        global application, bot
-        if not application:
-            # 初始化 bot 和 application
-            bot = Bot(TG_BOT_TOKEN, request=http_request)
-            application = Application.builder().bot(bot).build()
-
+        print("Webhook received")
         json_data = await request.json()
         update = Update.de_json(json_data, application.bot)
-
-        # 使用 application 的上下文管理器来处理更新
+        
         async with application:
             await application.process_update(update)
             
         return JSONResponse(content={"status": "ok"})
     except Exception as e:
-        logger.error(f"Error in webhook: {e!r}")
+        print(f"Error in webhook: {e!r}")
+        print(f"Traceback: {traceback.format_exc()}")
         return JSONResponse(
             content={"status": "error", "message": str(e)},
             status_code=500
