@@ -13,8 +13,8 @@ To use arbitrary callback data, you must install PTB via
 """
 import asyncio
 import logging
+import traceback
 from datetime import datetime, timezone, timedelta
-from typing import Callable, Any  # 添加必要的类型导入
 from telegram import Update, Bot
 from telegram.ext import (
     Application,
@@ -27,15 +27,17 @@ from cozepy import (
     Coze, TokenAuth, Message, ChatEventType, COZE_CN_BASE_URL
 )
 from telegram.request import HTTPXRequest
-import httpx
 from functools import wraps  # 添加装饰器所需的导入
 import sys
+import nest_asyncio
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+import uvicorn
 
 from api.superbase_client import (get_or_create_user, get_user_daily_limit,
     get_today_usage_count, create_project, update_project_messages, get_user_membership_info
 )
 from api.config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
-from flask import Flask, request, jsonify
 
 # 配置日志输出到 stdout，这样 Vercel 可以捕获日志
 logging.basicConfig(
@@ -52,18 +54,31 @@ coze = Coze(
 )
 BOT_ID = COZE_BOT_ID
 
-# 自定义请求处理器，改名为 http_request
+# 自定义请求处理器配置
 http_request = HTTPXRequest(
-    connection_pool_size=8,
-    connect_timeout=10.0,
-    read_timeout=10.0,
-    write_timeout=10.0,
-    pool_timeout=3.0,
+    connection_pool_size=16,  # Increased pool size for better concurrent handling
+    connect_timeout=20.0,     # More generous timeout for connections
+    read_timeout=20.0,        # More generous timeout for reading
+    write_timeout=20.0,       # More generous timeout for writing
+    pool_timeout=5.0,         # Increased pool timeout               # Add retry attempts for failed requests
 )
 
 # 初始化 bot 时使用自定义的请求处理器
 bot = Bot(TG_BOT_TOKEN, request=http_request)
 application = Application.builder().bot(bot).build()
+
+# 应用 nest_asyncio 来允许嵌套的事件循环
+nest_asyncio.apply()
+
+def run_async(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(f(*args, **kwargs))
+    return wrapper
 
 async def initialize_user_data(context: ContextTypes.DEFAULT_TYPE, tg_user_id: str, user_name: str) -> None:
     """初始化或更新用户数据"""
@@ -76,11 +91,11 @@ async def initialize_user_data(context: ContextTypes.DEFAULT_TYPE, tg_user_id: s
     if not user:
         logger.error(f"Failed to get or create user for tg_user_id: {tg_user_id}")
         return
-        
+
     # 获取用户每日限制和已使用次数
     daily_limit = await get_user_daily_limit(user['user_id'])
     used_count = await get_today_usage_count(user['user_id'])
-    
+
     context.user_data['daily_limit'] = daily_limit
     context.user_data['daily_count'] = daily_limit - used_count
     context.user_data['last_date'] = current_date.isoformat()
@@ -104,66 +119,62 @@ def log_function(func):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """开始算卦流程"""
     try:
-        print("Start command received")
+        chat_id = update.effective_chat.id
         user_id = str(update.effective_user.id)
         user_name = update.effective_user.first_name + " " + update.effective_user.last_name
-        
-        print(f"Initializing user {user_id}")
+
+        # 直接调用异步函数
         await initialize_user_data(context, user_id, user_name)
-        
+
         if context.user_data.get('daily_count', 0) <= 0:
-            print("User has no remaining count")
             await context.bot.send_message(
-                chat_id=update.effective_chat.id,
+                chat_id=chat_id,
                 text="今日算卦次数已用完，请明日再来。"
             )
             return
 
-        print("Sending welcome message")
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text="请输入你所求之事："
         )
         context.user_data['waiting_for_question'] = True
-        print("Start command completed")
-        
+
     except Exception as e:
-        print(f"Start command error: {str(e)}")
-        try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="系统出现错误，请稍后重试。"
-            )
-        except Exception as send_error:
-            print(f"Error sending error message: {str(send_error)}")
+        logger.error(f"Error in start: {e!r}")
+        logger.error(traceback.format_exc())
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="系统出现错误，请稍后重试。"
+        )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理用户输入的问题"""
     if context.user_data.get('waiting_for_question'):
-        await initialize_user_data(context, str(update.effective_user.id), update.effective_user.first_name + " " + update.effective_user.last_name)
-        
+        await initialize_user_data(context, str(update.effective_user.id), 
+                                 update.effective_user.first_name + " " + update.effective_user.last_name)
+
         if context.user_data['daily_count'] <= 0:
             await update.message.reply_text("今日算卦次数已用完，请明日再来。")
             return
 
         question = update.message.text
         context.user_data['waiting_for_question'] = False
-        
+
         # 创建新的项目记录
         user_id = context.user_data['user_id']
         project = await create_project(user_id, question)
         if not project:
             await update.message.reply_text("系统错误，请稍后再试。")
             return
-            
+
         messages = []
         text_buffer = ""
         message = None
         content_buffer = ""
         BUFFER_SIZE = 30
-        
+
         try:
-            user_id = project['project_id']  # 使用项目ID作为会话ID
+            user_id = project['project_id']
             for event in coze.chat.stream(
                 bot_id=BOT_ID,
                 user_id=user_id,
@@ -182,25 +193,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         messages.append({'role': 'assistant', 'content': content})
                     else:
                         content_buffer += content
-                        
+
                         if message is None:
-                            # 初始化消息
                             message = await update.message.reply_text(
                                 f"您所问的事：{question}\n\n卦象解析：\n{content_buffer}"
                             )
                             text_buffer = f"您所问的事：{question}\n\n卦象解析：\n{content_buffer}"
-                            content_buffer = ""  # 清空内容缓冲区
+                            content_buffer = ""
                         elif len(content_buffer) >= BUFFER_SIZE:
-                            # 更新现有消息
-                            text_buffer += content_buffer  # 将新内容添加到总缓冲区
+                            text_buffer += content_buffer
                             formatted_text = text_buffer.replace("<br><br>", "\n")
                             try:
                                 await message.edit_text(formatted_text)
                             except Exception as e:
                                 logger.warning(f"Failed to update message: {str(e)}")
-                            content_buffer = ""  # 清空内容缓冲区
-            
-            # 最后更新一次消息和项目记录
+                            content_buffer = ""
+
             if content_buffer and message:
                 text_buffer += content_buffer
                 messages.append({'role': 'assistant', 'content': text_buffer})
@@ -209,7 +217,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     await update_project_messages(project['project_id'], messages)
                 except Exception as e:
                     logger.warning(f"Failed to update final message: {str(e)}")
-                
+
         except Exception as e:
             logger.error(f"算卦出错: {str(e)}")
             await update.message.reply_text("抱歉，算卦系统暂时遇到问题，请稍后再试。")
@@ -219,20 +227,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """显示用户资料和今日剩余算卦次数"""
     await initialize_user_data(context, str(update.effective_user.id), update.effective_user.first_name + " " + update.effective_user.last_name)
-    
+
     user_name = update.effective_user.first_name
     daily_count = context.user_data['daily_count']
     daily_limit = context.user_data['daily_limit']
-    
+
     # 获取会员信息
     membership_info = await get_user_membership_info(context.user_data['user_id'])
-    
+
     if membership_info:
         # 转换时间为北京时间
         beijing_tz = timezone(timedelta(hours=8))
         start_time = datetime.fromisoformat(membership_info['start_time']).astimezone(beijing_tz)
         end_time = datetime.fromisoformat(membership_info['end_time']).astimezone(beijing_tz)
-        
+
         await update.message.reply_text(
             f"用户：{user_name}\n"
             f"会员等级：{membership_info['tier_name']}\n"
@@ -255,7 +263,7 @@ def suangua(question: str) -> str:
     result = ""
     try:
         user_id = f"user_{hash(question)}"
-        
+
         for event in coze.chat.stream(
             bot_id=BOT_ID,
             user_id=user_id,
@@ -271,130 +279,50 @@ def suangua(question: str) -> str:
                 print(f"收到消息：{event.message.content}")
             if event.event == ChatEventType.CONVERSATION_CHAT_COMPLETED:
                 print(f"Token usage: {event.chat.usage.token_count}")
-                
+
         # 确保所有特殊字符都被正确转义
         special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
         for char in special_chars:
             result = result.replace(char, f'\\{char}')
-                
+
         return result if result else "抱歉，算卦失败，请稍后再试。"
-        
+
     except Exception as e:
         logger.error(f"算卦出错: {str(e)}")
         return "抱歉，算卦系统暂时遇到问题，请稍后再试。"
 
-def create_app():
-    app = Flask(__name__)
-    
-    def init_webhook():
-        import asyncio
-        async def setup():
-            print("Initializing application and setting up webhook")
-            await application.initialize()
-            # 注册命令处理器
-            application.add_handler(CommandHandler("start", start))
-            application.add_handler(CommandHandler("profile", profile))
-            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-            # 只有 set_webhook 是异步方法，需要 await
-            await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
-            print("Webhook setup completed")
-        asyncio.run(setup())
-    
-    init_webhook()
-    logger.info("Application created successfully")  # 添加日志
-    
-    @app.route("/webhook", methods=["POST"])
-    def webhook():
-        try:
-            print("Webhook received")
-            json_data = request.get_json()
-            print(f"Webhook data: {json_data}")
-            
-            update = Update.de_json(json_data, bot)
-            
-            # 为每个请求创建新的事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def handle_update():
-                # 重新初始化应用
-                await application.initialize()
-                # 在应用上下文中处理所有操作
-                async with application:
-                    try:
-                        print("Processing update in application context")
-                        await application.process_update(update)
-                        print("Update processing completed")
-                    except Exception as e:
-                        print(f"Error in update processing: {str(e)}")
-                        raise
-            
-            try:
-                # 运行整个处理流程
-                loop.run_until_complete(handle_update())
-            except Exception as e:
-                print(f"Error in event loop: {str(e)}")
-                raise
-            finally:
-                try:
-                    # 确保所有任务完成
-                    pending = asyncio.all_tasks(loop)
-                    if pending:
-                        print(f"Completing {len(pending)} pending tasks")
-                        loop.run_until_complete(asyncio.gather(*pending))
-                except Exception as e:
-                    print(f"Error completing pending tasks: {str(e)}")
-                finally:
-                    loop.close()
-                    asyncio.set_event_loop(None)
-            
-            return jsonify({"status": "ok"})
-            
-        except Exception as e:
-            print(f"Webhook error: {str(e)}")
-            return jsonify({"status": "error", "message": str(e)}), 500
+# 创建 FastAPI 应用
+app = FastAPI()
 
-    @app.route("/send_photo", methods=["POST"])
-    def send_photo():
-        try:
-            data = request.get_json()
-            chat_id = data.get('chat_id')
-            photo_url = data.get('photo_url')
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时的初始化"""
+    await application.initialize()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("profile", profile))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
+    logger.info("Application initialized and webhook set")
 
-            if not chat_id or not photo_url:
-                return jsonify({"status": "error", "message": "Missing chat_id or photo_url"}), 400
+@app.post("/webhook")
+async def webhook(request: Request):
+    """处理 Telegram webhook 请求"""
+    try:
+        json_data = await request.json()
+        update = Update.de_json(json_data, application.bot)
+        await application.process_update(update)
+        return JSONResponse(content={"status": "ok"})
+    except Exception as e:
+        logger.error(f"Error in webhook: {e!r}")
+        return JSONResponse(
+            content={"status": "error", "message": str(e)},
+            status_code=500
+        )
 
-            async def send():
-                try:
-                    async with bot:
-                        await bot.send_photo(
-                            chat_id=chat_id,
-                            photo=photo_url
-                        )
-                except Exception as e:
-                    logger.error(f"Error sending photo: {str(e)}")
-
-            # 使用新的事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(send())
-            finally:
-                loop.close()
-                asyncio.set_event_loop(None)  # 清除当前事件循环
-                
-            return jsonify({"status": "success", "message": "Photo sent successfully"})
-        except Exception as e:
-            logger.error(f"Error in send_photo: {str(e)}")
-            return jsonify({"status": "error", "message": str(e)}), 500
-
-    @app.route("/")
-    def index():
-        return jsonify({"message": "Hello, this is the Telegram bot webhook!"})
-        
-    return app
-
-app = create_app()
+@app.get("/")
+async def index():
+    """首页"""
+    return {"message": "Hello, this is the Telegram bot webhook!"}
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    uvicorn.run(app, host="0.0.0.0", port=5000)
