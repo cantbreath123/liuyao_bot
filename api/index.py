@@ -285,64 +285,69 @@ def suangua(question: str) -> str:
 # 创建 FastAPI 应用
 app = FastAPI()
 
-# 全局变量来存储初始化状态
+# 全局变量声明
 application: Application = None
-bot = None
+initialization_lock = asyncio.Lock()
+
+async def ensure_application_initialized():
+    """确保应用已初始化"""
+    global application
+    
+    if application is not None:
+        return
+        
+    async with initialization_lock:
+        # Double check to prevent race condition
+        if application is not None:
+            return
+            
+        try:
+            print("Starting application initialization")
+            # 初始化 HTTP 请求处理器
+            http_request = HTTPXRequest(
+                connection_pool_size=16,
+                connect_timeout=20.0,
+                read_timeout=20.0,
+                write_timeout=20.0,
+                pool_timeout=5.0,
+            )
+
+            # 初始化 bot 和 application
+            bot = Bot(TG_BOT_TOKEN, request=http_request)
+            application = Application.builder().bot(bot).build()
+            
+            # 初始化 application
+            await application.initialize()
+            
+            # 添加处理器
+            application.add_handler(CommandHandler("start", start))
+            application.add_handler(CommandHandler("profile", profile))
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+            
+            # 设置 webhook
+            await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
+            print("Application initialized and webhook set")
+        except Exception as e:
+            print(f"Failed to initialize application: {e!r}")
+            print(f"Traceback: {traceback.format_exc()}")
+            raise
 
 @app.on_event("startup")
 async def startup_event():
-    """应用启动时的初始化"""
-    global application, bot
-    
+    """应用启动时尝试初始化"""
     try:
-        # 初始化 HTTP 请求处理器
-        http_request = HTTPXRequest(
-            connection_pool_size=16,
-            connect_timeout=20.0,
-            read_timeout=20.0,
-            write_timeout=20.0,
-            pool_timeout=5.0,
-        )
-
-        # 初始化 bot 和 application
-        bot = Bot(TG_BOT_TOKEN, request=http_request)
-        application = Application.builder().bot(bot).build()
-        
-        # 初始化 application
-        await application.initialize()
-        
-        # 添加处理器
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("profile", profile))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        # 设置 webhook
-        await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
-        print("Application initialized and webhook set")
+        await ensure_application_initialized()
     except Exception as e:
-        print(f"Failed to initialize application: {e!r}")
-        print(f"Traceback: {traceback.format_exc()}")
-        raise
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """应用关闭时的清理"""
-    global application
-    if application:
-        await application.shutdown()
-        print("Application shut down")
+        print(f"Startup initialization failed: {e!r}")
+        # 不在这里 raise 异常，让应用继续启动
 
 @app.post("/webhook")
 async def webhook(request: Request):
     """处理 Telegram webhook 请求"""
-    if not application:
-        print("Webhook called before application initialization")
-        return JSONResponse(
-            content={"status": "error", "message": "Application not initialized"},
-            status_code=503
-        )
-        
     try:
+        # 确保应用已初始化
+        await ensure_application_initialized()
+        
         print("Webhook received")
         json_data = await request.json()
         update = Update.de_json(json_data, application.bot)
@@ -358,11 +363,6 @@ async def webhook(request: Request):
             content={"status": "error", "message": str(e)},
             status_code=500
         )
-
-@app.get("/")
-async def index():
-    """首页"""
-    return {"message": "Hello, this is the Telegram bot webhook!"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=5000)
