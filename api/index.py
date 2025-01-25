@@ -294,23 +294,53 @@ def suangua(question: str) -> str:
 # 创建 FastAPI 应用
 app = FastAPI()
 
+# 全局变量来存储初始化状态
+application = None
+bot = None
+
 @app.on_event("startup")
 async def startup_event():
     """应用启动时的初始化"""
+    global application, bot
+
+    # 初始化 bot 和 application
+    bot = Bot(TG_BOT_TOKEN, request=http_request)
+    application = Application.builder().bot(bot).build()
+    
+    # 初始化 application
     await application.initialize()
+    
+    # 添加处理器
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("profile", profile))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # 设置 webhook
     await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
     logger.info("Application initialized and webhook set")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """应用关闭时的清理"""
+    global application
+    if application:
+        await application.shutdown()
+        logger.info("Application shut down")
 
 @app.post("/webhook")
 async def webhook(request: Request):
     """处理 Telegram webhook 请求"""
     try:
+        if not application:
+            raise RuntimeError("Application not initialized")
+            
         json_data = await request.json()
         update = Update.de_json(json_data, application.bot)
-        await application.process_update(update)
+        
+        # 使用 application 的上下文管理器来处理更新
+        async with application:
+            await application.process_update(update)
+            
         return JSONResponse(content={"status": "ok"})
     except Exception as e:
         logger.error(f"Error in webhook: {e!r}")
