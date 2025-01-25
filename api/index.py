@@ -113,17 +113,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         if context.user_data.get('daily_count', 0) <= 0:
             print("User has no remaining count")
-            await update.message.reply_text("今日算卦次数已用完，请明日再来。")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="今日算卦次数已用完，请明日再来。"
+            )
             return
 
         print("Sending welcome message")
-        await update.message.reply_text("请输入你所求之事：")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="请输入你所求之事："
+        )
         context.user_data['waiting_for_question'] = True
         print("Start command completed")
         
     except Exception as e:
         print(f"Start command error: {str(e)}")
-        await update.message.reply_text("系统出现错误，请稍后重试。")
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="系统出现错误，请稍后重试。"
+            )
+        except Exception as send_error:
+            print(f"Error sending error message: {str(send_error)}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理用户输入的问题"""
@@ -300,32 +312,42 @@ def create_app():
             
             update = Update.de_json(json_data, bot)
             
+            # 为每个请求创建新的事件循环
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-            try:
-                print("Processing update")
-                # 使用 async with 确保应用上下文在整个处理过程中保持活跃
-                async def process():
-                    async with application:
+            async def handle_update():
+                # 重新初始化应用
+                await application.initialize()
+                # 在应用上下文中处理所有操作
+                async with application:
+                    try:
+                        print("Processing update in application context")
                         await application.process_update(update)
-                
-                loop.run_until_complete(process())
-                print("Update processed")
-                
-                # 确保所有待处理的任务都完成
-                pending = asyncio.all_tasks(loop)
-                if pending:
-                    print(f"Waiting for {len(pending)} pending tasks")
-                    loop.run_until_complete(asyncio.gather(*pending))
-                    
+                        print("Update processing completed")
+                    except Exception as e:
+                        print(f"Error in update processing: {str(e)}")
+                        raise
+            
+            try:
+                # 运行整个处理流程
+                loop.run_until_complete(handle_update())
             except Exception as e:
-                print(f"Error processing update: {str(e)}")
+                print(f"Error in event loop: {str(e)}")
                 raise
             finally:
-                loop.close()
-                asyncio.set_event_loop(None)
-                
+                try:
+                    # 确保所有任务完成
+                    pending = asyncio.all_tasks(loop)
+                    if pending:
+                        print(f"Completing {len(pending)} pending tasks")
+                        loop.run_until_complete(asyncio.gather(*pending))
+                except Exception as e:
+                    print(f"Error completing pending tasks: {str(e)}")
+                finally:
+                    loop.close()
+                    asyncio.set_event_loop(None)
+            
             return jsonify({"status": "ok"})
             
         except Exception as e:
