@@ -31,6 +31,8 @@ from api.superbase_client import (get_or_create_user, get_user_daily_limit,
 )
 from api.config import TG_BOT_TOKEN, COZE_TOKEN, COZE_BOT_ID
 from flask import Flask, request, jsonify
+from functools import wraps
+from typing import Callable, Any
 
 # Enable logging
 logging.basicConfig(
@@ -69,6 +71,25 @@ async def initialize_user_data(context: ContextTypes.DEFAULT_TYPE, tg_user_id: s
     context.user_data['last_date'] = current_date.isoformat()
     context.user_data['user_id'] = user['user_id']  # 存储用户ID而不是整个用户对象
 
+def with_error_handling(func: Callable) -> Callable:
+    @wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                retry_count += 1
+                logger.error(f"Error in {func.__name__}: {str(e)}")
+                if retry_count >= max_retries:
+                    raise
+                await asyncio.sleep(1)  # 重试前等待
+                
+    return wrapper
+
+@with_error_handling
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """开始算卦流程"""
     # 初始化用户数据
@@ -258,20 +279,24 @@ def create_app():
             update = Update.de_json(json_data, bot)
             
             async def process_update():
-                async with application:
-                    await application.process_update(update)
+                try:
+                    async with application:
+                        await application.process_update(update)
+                except Exception as e:
+                    logger.error(f"Error processing update: {str(e)}")
                     
-            # 创建新的事件循环
+            # 使用新的事件循环
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 loop.run_until_complete(process_update())
             finally:
                 loop.close()
+                asyncio.set_event_loop(None)  # 清除当前事件循环
                 
             return jsonify({"status": "ok"})
         except Exception as e:
-            print(f"Error processing update: {str(e)}")
+            logger.error(f"Error in webhook: {str(e)}")
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/send_photo", methods=["POST"])
@@ -285,22 +310,27 @@ def create_app():
                 return jsonify({"status": "error", "message": "Missing chat_id or photo_url"}), 400
 
             async def send():
-                async with bot:
-                    await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=photo_url
-                    )
+                try:
+                    async with bot:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=photo_url
+                        )
+                except Exception as e:
+                    logger.error(f"Error sending photo: {str(e)}")
 
-            # 创建新的事件循环
+            # 使用新的事件循环
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 loop.run_until_complete(send())
             finally:
                 loop.close()
+                asyncio.set_event_loop(None)  # 清除当前事件循环
                 
             return jsonify({"status": "success", "message": "Photo sent successfully"})
         except Exception as e:
+            logger.error(f"Error in send_photo: {str(e)}")
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/")
