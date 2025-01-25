@@ -123,12 +123,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await initialize_user_data(context, user_id, user_name)
         
         # 检查是否还有剩余次数
-        if context.user_data.get('daily_count', 0) <= 0:
+        if context.user_data['daily_count'] <= 0:
             await update.message.reply_text("今日算卦次数已用完，请明日再来。")
             return
 
-        # 使用 asyncio.shield 来保护关键操作
-        await asyncio.shield(update.message.reply_text("请输入你所求之事："))
+        await update.message.reply_text("请输入你所求之事：")
         context.user_data['waiting_for_question'] = True
         
     except Exception as e:
@@ -302,50 +301,15 @@ def create_app():
             json_data = request.get_json()
             update = Update.de_json(json_data, bot)
             
-            async def process_update():
-                async with application:
-                    await application.process_update(update)
-
-            # 使用上下文管理器处理事件循环
-            from contextlib import contextmanager
-
-            @contextmanager
-            def managed_event_loop():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    yield loop
-                finally:
-                    try:
-                        # 取消所有待处理的任务
-                        pending = asyncio.all_tasks(loop)
-                        for task in pending:
-                            task.cancel()
-                        
-                        # 运行一次以处理取消的任务
-                        if pending:
-                            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                            
-                        # 关闭事件循环
-                        if not loop.is_closed():
-                            loop.run_until_complete(loop.shutdown_asyncgens())
-                            loop.close()
-                    except Exception as e:
-                        logger.error(f"Error cleaning up event loop: {str(e)}")
-                    finally:
-                        asyncio.set_event_loop(None)
-
-            # 使用上下文管理器
-            with managed_event_loop() as loop:
-                try:
-                    loop.run_until_complete(
-                        asyncio.wait_for(process_update(), timeout=30.0)
-                    )
-                except asyncio.TimeoutError:
-                    logger.error("Request timeout")
-                except Exception as e:
-                    logger.error(f"Error in webhook: {str(e)}")
-                    
+            # 简单地创建一个新的事件循环来处理请求
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                loop.run_until_complete(application.process_update(update))
+            finally:
+                loop.close()
+                
             return jsonify({"status": "ok"})
             
         except Exception as e:
