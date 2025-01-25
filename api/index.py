@@ -14,6 +14,7 @@ To use arbitrary callback data, you must install PTB via
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
+from typing import Callable, Any  # 添加必要的类型导入
 from telegram import Update, Bot
 from telegram.ext import (
     Application,
@@ -27,6 +28,7 @@ from cozepy import (
 )
 from telegram.request import HTTPXRequest
 import httpx
+from functools import wraps  # 添加装饰器所需的导入
 
 from api.superbase_client import (get_or_create_user, get_user_daily_limit,
     get_today_usage_count, create_project, update_project_messages, get_user_membership_info
