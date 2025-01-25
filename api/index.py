@@ -201,7 +201,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             if content_buffer and message:
                 text_buffer += content_buffer
-                messages.append({'role': 'assistant', 'content': text_buffer})
+                formatted_text = text_buffer.replace("<br><br>", "\n")
+                messages.append({'role': 'assistant', 'content': formatted_text})
                 try:
                     await message.edit_text(text_buffer)
                     await update_project_messages(project['project_id'], messages)
