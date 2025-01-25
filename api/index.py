@@ -299,47 +299,55 @@ def create_app():
     @app.route("/webhook", methods=["POST"])
     def webhook():
         try:
-            # 使用 Flask 的 request
             json_data = request.get_json()
             update = Update.de_json(json_data, bot)
             
             async def process_update():
+                async with application:
+                    await application.process_update(update)
+
+            # 使用上下文管理器处理事件循环
+            from contextlib import contextmanager
+
+            @contextmanager
+            def managed_event_loop():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
                 try:
-                    async with application:
-                        await application.process_update(update)
-                except Exception as e:
-                    logger.error(f"Error processing update: {str(e)}")
-                    
-            # 创建新的事件循环
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            
-            try:
-                # 在新的事件循环中运行
-                new_loop.run_until_complete(
-                    asyncio.wait_for(process_update(), timeout=30.0)
-                )
-            except asyncio.TimeoutError:
-                logger.error("Request timeout")
-            except Exception as e:
-                logger.error(f"Error in webhook: {str(e)}")
-            finally:
-                try:
-                    # 清理未完成的任务
-                    pending = asyncio.all_tasks(new_loop)
-                    for task in pending:
-                        task.cancel()
-                    # 运行一次以处理取消的任务
-                    new_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                    # 关闭事件循环
-                    new_loop.close()
-                except Exception as e:
-                    logger.error(f"Error cleaning up event loop: {str(e)}")
+                    yield loop
                 finally:
-                    # 确保清除当前事件循环
-                    asyncio.set_event_loop(None)
-                
+                    try:
+                        # 取消所有待处理的任务
+                        pending = asyncio.all_tasks(loop)
+                        for task in pending:
+                            task.cancel()
+                        
+                        # 运行一次以处理取消的任务
+                        if pending:
+                            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                            
+                        # 关闭事件循环
+                        if not loop.is_closed():
+                            loop.run_until_complete(loop.shutdown_asyncgens())
+                            loop.close()
+                    except Exception as e:
+                        logger.error(f"Error cleaning up event loop: {str(e)}")
+                    finally:
+                        asyncio.set_event_loop(None)
+
+            # 使用上下文管理器
+            with managed_event_loop() as loop:
+                try:
+                    loop.run_until_complete(
+                        asyncio.wait_for(process_update(), timeout=30.0)
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("Request timeout")
+                except Exception as e:
+                    logger.error(f"Error in webhook: {str(e)}")
+                    
             return jsonify({"status": "ok"})
+            
         except Exception as e:
             logger.error(f"Error in webhook: {str(e)}")
             return jsonify({"status": "error", "message": str(e)}), 500
