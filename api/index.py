@@ -294,7 +294,7 @@ def create_app():
     @app.route("/webhook", methods=["POST"])
     def webhook():
         try:
-            print("Webhook received")  # 使用 print 而不是 logger
+            print("Webhook received")
             json_data = request.get_json()
             print(f"Webhook data: {json_data}")
             
@@ -305,8 +305,20 @@ def create_app():
             
             try:
                 print("Processing update")
-                loop.run_until_complete(application.process_update(update))
+                # 使用 async with 确保应用上下文在整个处理过程中保持活跃
+                async def process():
+                    async with application:
+                        await application.process_update(update)
+                
+                loop.run_until_complete(process())
                 print("Update processed")
+                
+                # 确保所有待处理的任务都完成
+                pending = asyncio.all_tasks(loop)
+                if pending:
+                    print(f"Waiting for {len(pending)} pending tasks")
+                    loop.run_until_complete(asyncio.gather(*pending))
+                    
             except Exception as e:
                 print(f"Error processing update: {str(e)}")
                 raise
