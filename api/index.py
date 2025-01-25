@@ -336,7 +336,6 @@ async def webhook(request: Request):
             # 初始化 bot 和 application
             bot = Bot(TG_BOT_TOKEN, request=http_request)
             application = Application.builder().bot(bot).build()
-            raise RuntimeError("Application not initialized")
 
         json_data = await request.json()
         update = Update.de_json(json_data, application.bot)
