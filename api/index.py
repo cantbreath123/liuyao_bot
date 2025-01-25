@@ -301,14 +301,19 @@ def create_app():
             json_data = request.get_json()
             update = Update.de_json(json_data, bot)
             
-            # 简单地创建一个新的事件循环来处理请求
+            # 创建一个新的事件循环来处理请求
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
             try:
+                # 等待所有任务完成
                 loop.run_until_complete(application.process_update(update))
+                # 确保所有待处理的任务都完成
+                pending = asyncio.all_tasks(loop)
+                loop.run_until_complete(asyncio.gather(*pending))
             finally:
                 loop.close()
+                asyncio.set_event_loop(None)  # 清除当前事件循环的引用
                 
             return jsonify({"status": "ok"})
             
