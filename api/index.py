@@ -65,6 +65,11 @@ http_request = HTTPXRequest(
 bot = Bot(TG_BOT_TOKEN, request=http_request)
 application = Application.builder().bot(bot).build()
 
+# 注册命令处理器
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("profile", profile))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
 async def initialize_user_data(context: ContextTypes.DEFAULT_TYPE, tg_user_id: str, user_name: str) -> None:
     """初始化或更新用户数据"""
     # 获取北京时间
@@ -277,11 +282,10 @@ def create_app():
     def init_webhook():
         import asyncio
         async def setup():
-            logger.info("Initializing application")  # 添加日志
+            print("Initializing application and setting up webhook")
             await application.initialize()
             await application.bot.set_webhook(url="https://liuyao-bot.vercel.app/webhook")
-            logger.info("Webhook setup completed")  # 添加日志
-            
+            print("Webhook setup completed")
         asyncio.run(setup())
     
     init_webhook()
